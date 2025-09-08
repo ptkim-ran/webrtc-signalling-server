@@ -1,9 +1,17 @@
 const express = require("express");
+const cors = require("cors");
 const app = express();
-const http = require("http").createServer(app);
-const io = require("socket.io")(http, {
+const server = require("http").createServer(app);
+
+// cors 미들웨어 추가
+app.use(cors({
+  origin: ["http://webrtc-local.com:3000", "http://172.23.84.119:3000"],
+  credentials: true
+}));
+
+const io = require("socket.io")(server, {
   cors: {
-    origin: "*", // 모s든 domain 에서 acces 허용
+    origin: ["http://webrtc-local.com:3000", "http://172.23.84.119:3000"],
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -11,7 +19,7 @@ const io = require("socket.io")(http, {
 const path = require("path");
 
 // static file 서빙(window client에서 js, css file 접근 가능하도록)
-app.use(express.static(path.join(__dirname)));
+app.use(express.static(path.join(__dirname, "public")));
 
 // CORS 미들웨어 header path (추가 보안)
 app.use((req, res, next) => {
@@ -72,7 +80,7 @@ app.get("/api/turn-credentials", (req, res) => {
 
 // 기본 경로
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 // room 관리 객체
@@ -230,7 +238,7 @@ io.on("connection", (socket) => {
 const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0"; // 모든 network interface에서 listen
 
-http.listen(PORT, HOST, () => {
+server.listen(PORT, HOST, () => {
   console.log(`server running on: 
                 - local: http://localhost:${PORT}
                 - network: http://${getLocalIpAddress()}:${PORT}`);
