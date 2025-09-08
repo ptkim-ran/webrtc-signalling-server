@@ -1,0 +1,20 @@
+{
+  "name": "webrtc-app",
+  "version": "1.0.0",
+  "description": "webRTC video application with Coturn",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "turn:install": "sudo apt install coturn",
+    "turn:config": "sudo cp turnserver.conf /etc/turnserver.conf",
+    "turn:start": "sudo systemctl start cotunr"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.5.5"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.20"
+  }
+}
