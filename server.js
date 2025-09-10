@@ -56,7 +56,7 @@ app.get("/api/turn-credentials", (req, res) => {
 
     // realm을 ip 주소로 사용 
     // -> 추후 /etc/turnserver.cong 에서 domain이 있으면 변경 or ip을 넣어주어야 하고 아래 realm을 지움.
-    const realm = "112.169.164.202";
+    const realm = "175.209.19.41";
     const username = `${timestamp}:your-username`;
     const secret = "your-super-secure-very-log-random-key-1245673456abcdef1234641234abcdefse";
     
@@ -91,7 +91,7 @@ const roomManager = {
     if (!this.rooms.has(roomId)) {
       this.rooms.set(roomId, {
         clients: new Set(),
-        maxClients: 10
+        maxClients: 9
       });
     }
     return this.rooms.get(roomId);

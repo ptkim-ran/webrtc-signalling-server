@@ -2,31 +2,66 @@
 <html lang="en-US">
   <head>
 
-  <title>Realtime communication with WebRTC</title>
+  <title>CCTV Monitoring System</title>
 
   <link rel="stylesheet" href="css/main.css" />
+  <style>
+    /* CCTV 전용 style 추가 */
+    .cctv-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 20px;
+    }
+    .cctv-container {
+      position: relative;
+      background: #000;
+      border-radius: 5px;
+      overflow: hidden;
+      aspect-ratio: 16/9;
+    }
+    .cctv-label {
+      position: absolute;
+      top: 5px;
+      left: 5px;
+      background: rgba(0,0,0,0.7);
+      color: white;
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-size: 12px;
+      z-index: 10;
+    }
+    .cctv-status {
+      position: absolute;
+      bottom: 5px;
+      right: 5px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      background: rgba(0,0,0,0.7);
+      color: white;
+    }
+    .status-connected {
+      color: #4caf50;
+    }
+    .status-disconnected {
+      color: #f44336;
+    }
+  </style>
 
 </head>
 
 <body>
 
-  <h1>Realtime communication with WebRTC</h1>
+  <h1>CCTV Monitoring System (9 Channels)</h1>
 
-  <div id="videos">
-    <div class="video-container remote">
-      <div class="video-label">others</div>
-      <video id="remoteVideo" autoplay playsinline></video>
-    </div>
-    <div class="video-container local">
-      <div class="video-label">me</div>
-      <video id="localVideo" autoplay muted playsinline></video>
-    </div>
+  <div class="cctv-grid" id="cctvGrid">
+    <!-- CCTV 채널들이 여기에 동적으로 추가됩니다 -->
   </div>
 
   <div style="position: fixed; bottom: 20px; left: 20px;">
-    <button id="muteBtn">Mute</button>
-    <button id="videoBtn">Video</button>
-    <button id="playOtherBtn">play other video</button>
+    <button id="refreshBtn">Refresh Streams</button>
+    <button id="fullscreenBtn">Fullscreen</button>
   </div>
 
   <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>

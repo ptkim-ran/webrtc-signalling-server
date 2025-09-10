@@ -14,6 +14,9 @@ let peerStreams;
 let turnReady = false;
 let room = "";
 
+let cctvChannels = {};
+let activeCctvCount = 0;
+
 let pcConfig = {
   'iceServers': [
     {
@@ -38,21 +41,31 @@ let sdpConstraints = {
 
 // 나머지 코드는 동일하게 유지하지만, DOM 로드 후 실행되도록 수정
 document.addEventListener('DOMContentLoaded', function() {
-  let localVideo = document.querySelector('#localVideo');
-  let remoteVideo = document.querySelector('#remoteVideo');
+
+  // CCTV grid 초기화
+  initializeCctvGrid();
 
   // button event listener 설정
-  document.querySelector("#muteBtn").addEventListener("click", toggleMute);
-  document.querySelector("#videoBtn").addEventListener("click", toggleVideo);
-  document.querySelector("#playOtherBtn").addEventListener("click", addPlayButton);
+  document.querySelector("#refreshBtn").addEventListener("click", refreshAllStreams);
+  document.querySelector("#fullscreenBtn").addEventListener("click", toggleFullscreen)
 
-  // 방 이름 입력
-  room = prompt('Enter room name:') || "room-" + Math.random().toString(36).substr(2, 5);
+  // 방 이름 고정 (CCTV 모니터링용)
+  room = "cctv-monitoring-room";
 
-
-  if (room !== '') {
+  // TURN 서버 credentials 요청 (local이 아닐 경우)
+  if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+    requestTurnCredentials().then(() => {
+      // TURN 서버 설정 후에 서버에 연결
+      socket.emit('create or join', room);
+      console.log('Connecting to CCTV monitoring room', room);
+    })
+  } 
+  else {
+    turnReady = true;
+    console.log('Local development, using STUN only');
+    // STUN만 사용할 경우 바로 연결
     socket.emit('create or join', room);
-    console.log('Attempted to create or  join room', room);
+    console.log('Connecting to CCTV monitoring room', room);
   }
 
   // socket event listener
@@ -117,18 +130,22 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
-  // peer 연결 종료 알림
+  // peer-left event 연결 종료 알림
   socket.on("peer-left", function(data) {
+    const peerId = data.socketId;
     console.log(`Peer left:`, data);
-    if (peerConnections[data.socketId]) {
-      peerConnections[data.socketId].close();
-      delete peerConnections[data.socketId];
+
+    if (peerConnections[peerId]) {
+      peerConnections[peerId].close();
+      delete peerConnections[peerId];
     }
 
+    // CCTV channel 해제
+    releaseCctvChannel(data.socketId);
+
     // stream 도 제거
-    if (peerStreams && peerStreams[data.socketId]) {
+    if (peerStreams && peerStreams[peerId]) {
       delete peerStreams[data.socketId];
-      updateRemoteVideoDisplay();
     }
   });
 
@@ -190,39 +207,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
-  ////////////////////////////////////////////////////
-  navigator.mediaDevices.getUserMedia({
-    audio: true,
-    video: true
-  })
-  .then(gotStream)
-  .catch(function(e) {
-    console.error(`getUserMedia() error: ${e}`);
-    alert(`Camera access error: ${e.name}`);
-  });
-
-  function gotStream(stream) {
-    console.log('Adding local stream.');
-    localStream = stream;
-    localVideo.srcObject = stream;
-
-    // 모든 peer들에게 미디어 준비 완료 알림
-    socket.emit("message", {
-      targetId: "broadcast",
-      message: "got user media",
-      room: room
-    });
-
-    // TURN 서버 credentials 요청 (local이 아닐 경우)
-    if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-      requestTurnCredentials();
-    } 
-    else {
-      turnReady = true;
-      console.log('Local development, using STUN only');
-    }
-  }
-
   // TURN 자격증명 요청 함수
   async function requestTurnCredentials() {
     try {
@@ -266,10 +250,12 @@ document.addEventListener('DOMContentLoaded', function() {
 //      console.log('TURN servers added to config:', pcConfig.iceServers);
 
       turnReady = true;
+      return true;
     }
     catch (error) {
       console.warn(`TURN server setup failed, using STUN only: ${error}`);
       turnReady = true;
+      return false;
     }
   }
 
@@ -283,13 +269,6 @@ document.addEventListener('DOMContentLoaded', function() {
     try {
       const pc = new RTCPeerConnection(pcConfig);
       peerConnections[targetSocketId] = pc;
-
-      // local stream 추가
-      if (localStream) {
-        localStream.getTracks().forEach(track => {
-          pc.addTrack(track, localStream);
-        });
-      }
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -317,17 +296,23 @@ document.addEventListener('DOMContentLoaded', function() {
       // ontrack 핸들러 - 반드시 ADD_TRACK 이벤트 전에 설정
       pc.ontrack = (event) => {
         console.log(`Remote stream received from ${targetSocketId}`);
-        console.log('Remote stream tracks:', event.streams[0].getTracks());
-        //peerStreams = event.streams[0];
+        
         // 각 peer별로 stream 저장
         if(!peerStreams) {
           peerStreams = {};
         }
-        peerStreams[targetSocketId] = event.streams[0];
-
-        console.log('Remote stream tracks:', event.streams[0].getTracks());
-        // video 요소를 stream에 할당
-        updateRemoteVideoDisplay();
+        const stream = event.streams[0];
+        if (!peerStreams[targetSocketId]) {
+          peerStreams[targetSocketId] = stream;
+          // CCTV channel 에 할담 및 표시
+          const channel = assignCctvChannel(targetSocketId);
+          if (channel !== -1) {
+            updateCctvVideoDisplay(targetSocketId, event.streams[0]);
+          }
+        }
+        else {
+          console.log(`duplicated track ignore for ${targetSocketId}`);
+        }
 
       };
 
@@ -394,41 +379,9 @@ document.addEventListener('DOMContentLoaded', function() {
       .catch(error => console.error('Create answer error:', error));
   }
 
-  function updateRemoteVideoDisplay() {
-    // all remote stream을 하나로 합치거나 
-    // 가장 최근의 stream만 표시하는 방식 선택
-
-    if (Object.keys(peerStreams).length > 0) {
-      // 가장 최근의 stream 표시
-      const lastPeerId = Object.keys(peerStreams).pop();
-      const stream = peerStreams[lastPeerId];
-    
-      console.log('Setting remote video srcObject with stream:', stream);
-      console.log('Stream has video tracks:', stream.getVideoTracks().length);
-      console.log('Stream has audio tracks:', stream.getAudioTracks().length);
-      
-      remoteVideo.srcObject = peerStreams[lastPeerId];
-
-    } else {
-      console.log('No remote streams available');
-      remoteVideo.srcObject = null;
-    }
-  }
-
   // 스트림 상태 확인 함수
   function checkStreamStatus() {
     console.log('=== Stream Status ===');
-    console.log('Local stream:', localStream ? '있음' : '없음');
-    console.log('Local video srcObject:', document.getElementById('localVideo').srcObject);
-    console.log('Remote video srcObject:', document.getElementById('remoteVideo').srcObject);
-    
-    if (localStream) {
-      console.log('Local audio tracks:', localStream.getAudioTracks().length);
-      console.log('Local video tracks:', localStream.getVideoTracks().length);
-      localStream.getTracks().forEach((track, index) => {
-        console.log(`Local track ${index}:`, track.kind, track.readyState, track.enabled);
-      });
-    }
     
     if (peerStreams) {
       Object.keys(peerStreams).forEach(peerId => {
@@ -489,57 +442,6 @@ document.addEventListener('DOMContentLoaded', function() {
     return statusEl;
   }
 
-  // later, 화면 공유 추가를 위한 준비
-  function shareScreen() {
-    navigator.mediaDevices.getDisplayMedia({ vide: true})
-      .then(screenStream => {
-
-      });
-  }
-
-  function toggleMute() {
-    if (localStream) {
-      const audioTracks = localStream.getAudioTracks();
-      if (audioTracks.length > 0) {
-        audioTracks[0].enabled = !audioTracks[0].enabled;
-        const button = document.querySelector("#muteBtn");
-        button.textContent = audioTracks[0].enabled ? 'Mute' : 'Unmute';
-        button.style.background = audioTracks[0].enabled ? '' : '#ff4444';
-        console.log("Audio: ", audioTracks[0].enabled ? "unmute" : "muted");
-      }
-    }
-  }
-
-  function toggleVideo() {
-    try {
-      if (localStream && localStream.getVideoTracks().length > 0) {
-        const videoTrack = localStream.getVideoTracks()[0];
-        videoTrack.enabled = !videoTrack.enabled;
-        console.log("Video: ", videoTrack.enabled ? "enabled" : "disabled");
-      }
-    }
-    catch (error) {
-      console.error('Toggle video error:', error);
-    }
-  }
-
-  // 또는 버튼 추가로 재생 시작
-  function addPlayButton() {
-    const playBtn = document.querySelector("#playOtherBtn");
-    playBtn.textContent = 'Start Video';
-
-    playBtn.onclick = function() {
-      const videos = document.querySelectorAll('video');
-      videos.forEach(video => {
-        if (video.srcObject) {
-          video.play()
-            .then(() => console.log(`${video.id} started playing`))
-            .catch(error => console.error(`${video.id} play error:`, error));
-        }
-      });
-    };
-  }
-
   function hangup() {
     console.log('Hanging up all connections');
     
@@ -548,11 +450,6 @@ document.addEventListener('DOMContentLoaded', function() {
       pc.close();
     });
     peerConnections = {};
-
-    // localStream 정리
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-    }
 
     // other peer(s) 에게 연결 종료 알림
     socket.emit("message", {
@@ -567,3 +464,158 @@ document.addEventListener('DOMContentLoaded', function() {
     hangup();
   });
 });
+
+// CCTV grid 초기화 함수
+function initializeCctvGrid() {
+  const grid = document.querySelector("#cctvGrid");
+  grid.innerHTML = "";
+
+  // CCTV channel 생성
+  for (let i = 1; i <= 9; i++) {
+    const cctvContainer = document.createElement("div");
+    cctvContainer.className = "cctv-container";
+    cctvContainer.id = `cctv-${i}`;
+
+    const cctvLabel = document.createElement("div");
+    cctvLabel.className = "cctv-label";
+    cctvLabel.textContent = `Camera ${i}`;
+
+    const cctvVideo = document.createElement("video");
+    cctvVideo.id = `cctvVideo-${i}`;
+    cctvVideo.autoplay = true;
+    cctvVideo.playsInline = true;
+    cctvVideo.muted = true; // for some browser policy, audio will be muted for play. 
+    cctvVideo.style.width = "100%";
+    cctvVideo.style.height = "100%";
+
+    const cctvStatus = document.createElement("div");
+    cctvStatus.className = "cctv-status status-disconnected";
+    cctvStatus.id = `cctvStatus-${i}`;
+    cctvStatus.textContent = "DISCONNECTED";
+
+    cctvContainer.appendChild(cctvVideo);
+    cctvContainer.appendChild(cctvLabel);
+    cctvContainer.appendChild(cctvStatus);
+    grid.appendChild(cctvContainer);
+
+    // CCTV channel information 저장
+    cctvChannels[i] = {
+      element: cctvVideo,
+      status: cctvStatus,
+      connected: false,
+      peerId: null
+    };
+  }
+}
+
+// peer 연결시 CCTV channel 할당
+function assignCctvChannel(peerId) {
+  //사용 가능한 CCTV channel 찾기
+  for (let i=1; i <= 9; i++) {
+    if(!cctvChannels[i].connected) {
+      cctvChannels[i].connected = true;
+      cctvChannels[i].peerId = peerId;
+      cctvChannels[i].status.textContent = "CONNECTED";
+      cctvChannels[i].status.className = "cctv-status status-connected"
+      activeCctvCount++;
+      console.log(`Assigned CCTV channel ${i} to peer ${peerId}`);
+      return i;
+    }
+  }
+
+  console.log("no available CCTV channels");
+  return -1;
+}
+
+// peer 연결 해제시 CCTV channel 해제
+function releaseCctvChannel(peerId) {
+  //released CCTV channel 찾기
+  for (let i=1; i <= 9; i++) {
+    if(cctvChannels[i].peerId === peerId) {
+      cctvChannels[i].connected = false;
+      cctvChannels[i].peerId = null;
+      cctvChannels[i].element.srcObject = null;
+      cctvChannels[i].status.textContent = "DISCONNECTED";
+      cctvChannels[i].status.className = "cctv-status status-disconnected"
+      activeCctvCount--;
+      console.log(`Released CCTV channel ${i} from peer ${peerId}`);
+      return ;
+    }
+  }
+}
+
+// 원격 video 표시 update (CCTV 전용)
+function updateCctvVideoDisplay(peerId, stream) {
+
+  for (let i=1; i <= 9; i++) {
+    if(cctvChannels[i].peerId === peerId) {
+      console.log(`updating CCTV channel ${i} with stream from peer ${peerId}`);
+      if (cctvChannels[i].element.srcObject !== stream) {
+        cctvChannels[i].element.srcObject = stream;
+      }
+      
+      cctvChannels[i].element.muted = true; // 자동재생 정책 회피
+      cctvChannels[i].element.play()
+        .then(() => console.log(`CCTV ${i} started playing`))
+        .catch(error => console.error(`CCTV ${i} play error:`, error));
+      cctvChannels[i].status.className = "cctv-status status-connected"
+      cctvChannels[i].status.textContent = "CONNECTED"
+
+      return ;
+    }
+  }
+}
+
+// all stream update
+function refreshAllStreams() {
+  console.log("refreshing all CCTV streams");
+
+  Object.values(peerConnections).forEach(pc => {
+    pc.close();
+  });
+
+  peerConnections = {};
+  peerStreams = {};
+
+  // 모든 CCTV 채널 상태 초기화
+  for (let i = 1; i <= 9; i++) {
+    cctvChannels[i].connected = false;
+    cctvChannels[i].peerId = null;
+    cctvChannels[i].element.srcObject = null;
+    cctvChannels[i].status.textContent = 'DISCONNECTED';
+    cctvChannels[i].status.className = 'cctv-status status-disconnected';
+  }
+
+  activeCctvCount = 0;
+  
+  // 서버에 재연결 요청
+  socket.emit('create or join', room);
+}
+
+// 전체 화면 전환
+function toggleFullscreen() {
+  const elem = document.documentElement;
+
+  if (!document.fullscreenElement) {
+    if (elem.requestFullscreen) {
+      elem.requestFullscreen();
+    }
+    else if (elem.webkitRequestFullscreen) {
+      elem.webkitRequestFullscreen();
+    } 
+    else if (elem.msRequestFullscreen) {
+      elem.msRequestFullscreen();
+    }
+  }
+  else {
+    if (document.exitFullscreen) {
+      document.exitFullscreen();
+    } 
+    else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    } 
+    else if (document.msExitFullscreen) {
+      document.msExitFullscreen();
+    }
+  }
+}
