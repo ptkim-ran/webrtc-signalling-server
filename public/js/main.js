@@ -219,24 +219,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
       const turnConfig = await response.json();
       console.log("Got TURN server credentials:", turnConfig);
-      
+
       const turnServers = [
         {
-//          urls: `turn:112.169.164.202:3478?transport=udp`,
-          urls: turnConfig.urls[0], // udp
-          username: turnConfig.username,
-          credential: turnConfig.credential
-        },
-        {
-//          urls: `turn:112.169.164.202:3478?transport=tcp`,
-          urls: turnConfig.urls[1], // tcp
+          urls: turnConfig.urls,
           username: turnConfig.username,
           credential: turnConfig.credential
         }
       ];
-    
+
       pcConfig.iceServers.push(...turnServers);
-      console.log('TURN servers added to config:', turnServers);
+
+      console.log('TURN servers added to config:', pcConfig.iceServers);
 
       // coturn 만 동작하도록 했을때 config.
 //      pcConfig.iceServers = [

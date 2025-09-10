@@ -21,13 +21,6 @@ const path = require("path");
 // static file 서빙(window client에서 js, css file 접근 가능하도록)
 app.use(express.static(path.join(__dirname, "public")));
 
-// CORS 미들웨어 header path (추가 보안)
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type");
-  next();
-});
 
 // TURN server proxy endpoint (fetch 사용)
 app.get("/api/turn-server", async (req, res) => {
@@ -57,16 +50,17 @@ app.get("/api/turn-credentials", (req, res) => {
     // realm을 ip 주소로 사용 
     // -> 추후 /etc/turnserver.cong 에서 domain이 있으면 변경 or ip을 넣어주어야 하고 아래 realm을 지움.
     const realm = "175.209.19.41";
-    const username = `${timestamp}:your-username`;
+    // const username = `${timestamp}:your-username`;
+    const username = timestamp + ":"; // 또는 timestamp + ":any-user-id"
     const secret = "your-super-secure-very-log-random-key-1245673456abcdef1234641234abcdefse";
     
     const hmac = crypto.createHmac("sha1", secret);
     hmac.update(username);
-    const password = hmac.digest("base64");
+    const credential = hmac.digest("base64");
     
     return {
       username, 
-      credential:password,
+      credential:credential,
       urls: [
         `turn:${realm}:3478?transport=udp`,
         `turn:${realm}:3478?transport=tcp`
