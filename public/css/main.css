@@ -1,0 +1,73 @@
+/* CCTV 전용 스타일 추가 */
+.cctv-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin: 20px;
+  max-width: 1800px;
+  margin: 0 auto;
+}
+
+.cctv-container {
+  position: relative;
+  background: #000;
+  border-radius: 5px;
+  overflow: hidden;
+  aspect-ratio: 16/9;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+}
+
+.cctv-label {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  background: rgba(0,0,0,0.7);
+  color: white;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  z-index: 10;
+}
+
+.cctv-status {
+  position: absolute;
+  bottom: 5px;
+  right: 5px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  background: rgba(0,0,0,0.7);
+  color: white;
+}
+
+.status-connected { color: #4CAF50; }
+.status-disconnected { color: #f44336; }
+
+/* 버튼 스타일 조정 */
+button {
+  padding: 10px 20px;
+  margin: 0 10px;
+  border: none;
+  border-radius: 5px;
+  background-color: #2196F3;
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+button:hover {
+  background-color: #0b7dda;
+}
+
+/* 반응형 디자인 */
+@media (max-width: 1200px) {
+  .cctv-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .cctv-grid {
+    grid-template-columns: 1fr;
+  }
+}

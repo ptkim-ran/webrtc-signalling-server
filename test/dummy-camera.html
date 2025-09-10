@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dummy CCTV Camera</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    canvas, video { width: 100%; border-radius: 8px; background: #000; aspect-ratio: 16/9; }
+    label { display:block; margin-bottom: 4px; color:#444; }
+    .log { height: 180px; overflow: auto; border: 1px solid #ddd; padding: 8px; border-radius: 6px; font-size: 12px; background: #fafafa; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; }
+    button, select, input { padding: 8px 10px; border-radius: 6px; border: 1px solid #bbb; background:#fff; }
+    .pill { display:inline-block; padding:4px 8px; border-radius:999px; font-size:12px; border:1px solid #ddd; }
+    .ok { color:#0a7; border-color:#0a7; }
+  </style>
+</head>
+<body>
+  <h1>Dummy CCTV Camera (Browser Publisher)</h1>
+  <p class="pill">room: <b>cctv-monitoring-room</b></p>
+  <div class="controls">
+    <label>카메라 ID <input id="camId" value="cam-1" /></label>
+    <label>FPS
+      <select id="fps">
+        <option>15</option>
+        <option selected>30</option>
+        <option>60</option>
+      </select>
+    </label>
+    <label>해상도
+      <select id="res">
+        <option value="1280x720">1280x720</option>
+        <option value="1920x1080">1920x1080</option>
+        <option value="640x360">640x360</option>
+      </select>
+    </label>
+    <button id="startBtn">시뮬레이터 시작</button>
+    <button id="stopBtn">정지</button>
+  </div>
+
+  <div class="row" style="margin-top:16px">
+    <div>
+      <label>미리보기(로컬 캔버스)</label>
+      <canvas id="preview"></canvas>
+    </div>
+    <div>
+      <label>보내는 스트림 미러</label>
+      <video id="mirror" autoplay playsinline muted></video>
+    </div>
+  </div>
+
+  <h3>로그</h3>
+  <div id="log" class="log"></div>
+
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+  <script src="./js/dummy_camera.js"></script>
+</body>
+</html>
