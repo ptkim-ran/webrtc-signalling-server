@@ -3,10 +3,11 @@ const cors = require("cors");
 const app = express();
 const server = require("http").createServer(app);
 
-// cors 미들웨어 추가
+// ✅ CORS 설정 (중복 제거)
 app.use(cors({
-  origin: ["http://webrtc-local.com:3000", "http://172.23.84.119:3000"],
-  credentials: true
+origin: "*", // 개발/테스트용: 모든 origin 허용
+methods: ["GET", "POST", "OPTIONS"],
+allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 const io = require("socket.io")(server, {
@@ -16,13 +17,13 @@ const io = require("socket.io")(server, {
     credentials: true
   }
 });
+
 const path = require("path");
 
 // static file 서빙(window client에서 js, css file 접근 가능하도록)
 app.use(express.static(path.join(__dirname, "public")));
 
-
-// TURN server proxy endpoint (fetch 사용)
+// TURN server proxy endpoint
 app.get("/api/turn-server", async (req, res) => {
   try {
     // 외부 TURN server 대신 coturn server 정보 반환
@@ -161,6 +162,19 @@ io.on("connection", (socket) => {
     }
 
     console.log(`Room ${room} now has ${newCount} client(s)`);
+  });
+
+  // room information 재요청
+  socket.on("getRoomInfo", (data, callback) => {
+    const roomId = data.room;
+    const room = roomManager.getRoom(roomId);
+    const clients = Array.from(room.clients).filter(id => id !== socket.id);
+    const totalClients = room.clients.size;
+    const isInitiator = totalClients === 0;
+    if (callback) {
+      callback({
+        room: roomId, clients, totalClients, isInitiator});
+    }
   });
 
   socket.on("message", (data) => {

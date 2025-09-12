@@ -187,6 +187,7 @@
     Object.values(pcs).forEach(pc => pc.close());
     pcs = {};
     if (socket) socket.disconnect();
+    log('stopPublisher socket ', socket);
   }
 
   document.getElementById('startBtn').addEventListener('click', startPublisher);

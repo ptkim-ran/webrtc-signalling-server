@@ -123,6 +123,7 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log(`New peer joined:`, data);
 
     if (data.socketId !== socket.id) {
+      console.log(`data.socketId:${data.socketId}, socket.id: ${socket.id}`);
       createPeerConnection(data.socketId);
       if (isInitiator) {
         doCall(data.socketId);
@@ -135,18 +136,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const peerId = data.socketId;
     console.log(`Peer left:`, data);
 
-    if (peerConnections[peerId]) {
-      peerConnections[peerId].close();
-      delete peerConnections[peerId];
-    }
-
-    // CCTV channel 해제
-    releaseCctvChannel(data.socketId);
-
-    // stream 도 제거
-    if (peerStreams && peerStreams[peerId]) {
-      delete peerStreams[data.socketId];
-    }
+    cleanupPeer(peerId);
   });
 
   // 메세지 수신 함수
@@ -227,21 +217,12 @@ document.addEventListener('DOMContentLoaded', function() {
           credential: turnConfig.credential
         }
       ];
+      // coturn 만 동작하도록 하는 경우 relay 추가 해야 함.
+      // pcConfig.iceTransportPolicy = 'relay';
 
       pcConfig.iceServers.push(...turnServers);
 
       console.log('TURN servers added to config:', pcConfig.iceServers);
-
-      // coturn 만 동작하도록 했을때 config.
-//      pcConfig.iceServers = [
-//        {
-//          urls: turnConfig.urls,
-//          username: turnConfig.username,
-//          credential: turnConfig.credential
-//        }
-//      ];
-//      pcConfig.iceTransportPolicy = 'relay';
-//      console.log('TURN servers added to config:', pcConfig.iceServers);
 
       turnReady = true;
       return true;
@@ -258,11 +239,43 @@ document.addEventListener('DOMContentLoaded', function() {
   };
 
   /////////////////////////////////////////////////////////
+  // 기존 peer cleanup
+  function cleanupPeer(peerId) {
+    const pc = peerConnections[peerId];
+
+    if (pc) {
+      console.log(`Cleaning up peer: ${peerId}`);
+      pc.onicecandidate = null;
+      pc.ontrack = null;
+      pc.onconnectionstatechange = null;
+      pc.oniceconnectionstatechange = null;
+      pc.close();
+
+      delete peerConnections[peerId];
+    }
+    else {
+      console.log(`> No PeerConnection found for ${peerId} to clean up.`);
+    }
+
+    // 2. CCTV channel 해제
+    releaseCctvChannel(peerId);
+
+    // 3. peerStreams에서도 제거
+    if (peerStreams && peerStreams[peerId]) {
+      console.log(`> Removing stream reference for ${peerId} from peerStreams`);
+      delete peerStreams[peerId];
+    }
+    else {
+      console.log(`> No stream found for ${peerId} in peerStreams.`);
+    }
+
+    console.log(`Finished cleanup for peer: ${peerId}`);
+  }
   // PeerConnection 생성
-  function createPeerConnection(targetSocketId) {
+  function createPeerConnection(socketId) {
     try {
       const pc = new RTCPeerConnection(pcConfig);
-      peerConnections[targetSocketId] = pc;
+      peerConnections[socketId] = pc;
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -275,7 +288,7 @@ document.addEventListener('DOMContentLoaded', function() {
           }
 
           socket.emit("message", {
-            targetId: targetSocketId,
+            targetId: socketId,
             message: {
               type: "candidate",
               label: event.candidate.sdpMLineIndex,
@@ -289,30 +302,31 @@ document.addEventListener('DOMContentLoaded', function() {
       
       // ontrack 핸들러 - 반드시 ADD_TRACK 이벤트 전에 설정
       pc.ontrack = (event) => {
-        console.log(`Remote stream received from ${targetSocketId}`);
+        console.log(`Remote stream received from ${socketId}`);
         
         // 각 peer별로 stream 저장
         if(!peerStreams) {
           peerStreams = {};
         }
         const stream = event.streams[0];
-        if (!peerStreams[targetSocketId]) {
-          peerStreams[targetSocketId] = stream;
+        if (!peerStreams[socketId]) {
+          peerStreams[socketId] = stream;
           // CCTV channel 에 할담 및 표시
-          const channel = assignCctvChannel(targetSocketId);
+          const channel = assignCctvChannel(socketId);
           if (channel !== -1) {
-            updateCctvVideoDisplay(targetSocketId, event.streams[0]);
+            updateCctvVideoDisplay(socketId, event.streams[0]);
           }
         }
         else {
-          console.log(`duplicated track ignore for ${targetSocketId}`);
+          console.log(`duplicated track ignore for ${socketId}`);
         }
 
       };
 
       pc.oniceconnectionstatechange = () => {
-        console.log(`ICE state with ${targetSocketId}: ${pc.iceConnectionState}`);
+        console.log(`ICE state with ${socketId}: ${pc.iceConnectionState}`);
         updateConnectionStatus(pc.iceConnectionState);
+
         if (pc.iceConnectionState === "connected") {
           console.log('🎉 WebRTC connection established!');
         } else if (pc.iceConnectionState === "failed") {
@@ -321,10 +335,10 @@ document.addEventListener('DOMContentLoaded', function() {
       };
 
       pc.onsignalingstatechange = () => {
-        console.log(`Signalling state with ${targetSocketId}: ${pc.signalingState}`);
+        console.log(`Signalling state with ${socketId}: ${pc.signalingState}`);
       }
 
-      console.log('PeerConnection created for:', targetSocketId);
+      console.log('PeerConnection created for:', socketId);
       return pc;
     } 
     catch (e) {
@@ -584,6 +598,21 @@ function refreshAllStreams() {
   
   // 서버에 재연결 요청
   socket.emit('create or join', room);
+  // room 정보 다시 요청해서 offer/answer trigger
+  socket.emit("getRoomInfo", {room: room}, (data) => {
+    console.log("🔄 Refreshed Room info:", data);
+
+    isInitiator = data.isInitiator;
+
+    data.clients.forEach(clientId => {
+      if (isInitiator && clientId !== socket.id) {
+        console.log(`reconnecting to peer: ${clientId}`);
+
+        createPeerConnection(clientId);
+        doCall(clientId);
+      }
+    });
+  });
 }
 
 // 전체 화면 전환
