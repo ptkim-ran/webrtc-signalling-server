@@ -117,8 +117,9 @@ const roomManager = {
 io.on("connection", (socket) => {
   console.log(`client connected from: ${socket.handshake.headers.origin}`);
 
-  socket.on("create or join", (room) => {
-    console.log(`Socket ${socket.id} attempting to join room: ${room}`);
+  socket.on("create or join", (room, extra) => {
+    const camId = extra && extra.camId ? extra.camId : socket.id;
+    console.log(`Socket ${socket.id} (camId:${camId}) attempting to join room: ${room}`);
 
     const currentCount = roomManager.getClientCount(room);
     const roomInfo = roomManager.getRoom(room);
@@ -139,6 +140,7 @@ io.on("connection", (socket) => {
     // 기존 client들에게 new peer 알림
     socket.to(room).emit("peer-joined", {
       socketId: socket.id,
+      camId,
       room: room,
       totalClients: newCount
     });
@@ -148,7 +150,8 @@ io.on("connection", (socket) => {
       room: room,
       clients: roomClients,
       totalClients: newCount,
-      isInitiator: currentCount === 0
+      isInitiator: currentCount === 0,
+      camId
     });
 
 
@@ -178,7 +181,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("message", (data) => {
-    const { targetId, message} = data;
+    const { targetId, message, camId} = data;
 
     console.log(`Message from ${socket.id} to ${targetId}:`, message);
     
@@ -186,6 +189,7 @@ io.on("connection", (socket) => {
       // 방 전체 broadcast
       socket.to(data.room).emit("message", {
         from: socket.id,
+        camId,
         message: message
       });
     }
@@ -193,6 +197,7 @@ io.on("connection", (socket) => {
       // 특정 client에게 전송
       socket.to(targetId).emit("message", {
         from: socket.id,
+        camId,
         message: message
       });
     }
@@ -240,6 +245,50 @@ io.on("connection", (socket) => {
       from: socket.id,
       answer: answer
     });
+  });
+
+   /**
+   * dummy-camera를 stop/start 할 때 호출
+   * { room: roomId, camId: camId | null }
+   * camId=null이면 room 전체 cleanup
+   */
+  socket.on("cleanup-cam", (data) => {
+    const { room, camId } = data;
+    console.log(`cleanup-cam received for room=${room}, camId=${camId}`);
+
+    const roomInfo = roomManager.getRoom(room);
+    if (!roomInfo) return;
+
+    if (camId) {
+      // 특정 camId 정리
+      // camId가 socket.id로 등록되어 있으면 해당 peer 제거
+      if (roomInfo.clients.has(camId)) {
+        roomInfo.clients.delete(camId);
+        socket.to(room).emit("peer-left", {
+          socketId: camId,
+          room: room,
+          totalClients: roomInfo.clients.size
+        });
+        console.log(`Camera ${camId} removed from room ${room}`);
+      }
+    } else {
+      // room 전체 정리
+      roomInfo.clients.forEach(clientId => {
+        roomInfo.clients.delete(clientId);
+        socket.to(room).emit("peer-left", {
+          socketId: clientId,
+          room: room,
+          totalClients: roomInfo.clients.size
+        });
+        console.log(`Camera ${clientId} removed from room ${room}`);
+      });
+    }
+
+    // 빈 방이면 rooms에서 삭제
+    if (roomInfo.clients.size === 0) {
+      roomManager.rooms.delete(room);
+      console.log(`Room ${room} is empty, deleted`);
+    }
   });
 });
 

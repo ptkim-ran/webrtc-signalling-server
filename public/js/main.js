@@ -16,6 +16,8 @@ let room = "";
 
 let cctvChannels = {};
 let activeCctvCount = 0;
+// camId와 cctv 채널 매핑을 위한 추가 객체 필요
+let camIdToChannelMap = {}; // camId -> channelIndex 매핑
 
 let pcConfig = {
   'iceServers': [
@@ -28,18 +30,9 @@ let pcConfig = {
   ]
 };
 
-// coturn server만 동작시키기 위해서 dynamic하게 받도록 변경.
-//let pcConfig = {
-//  "iceServers": []
-//}
+let sdpConstraints = { offerToReceiveVideo: true, offerToReceiveAudio: true };
 
-// Set up audio and video regardless of what devices are present.
-let sdpConstraints = {
-  offerToReceiveVideo: true,
-  offerToReceiveAudio: true
-};
-
-// 나머지 코드는 동일하게 유지하지만, DOM 로드 후 실행되도록 수정
+// DOMContentLoaded 이후 초기화
 document.addEventListener('DOMContentLoaded', function() {
 
   // CCTV grid 초기화
@@ -120,13 +113,62 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // new peer 참가 알림
   socket.on("peer-joined", function(data) {
-    console.log(`New peer joined:`, data);
+    const camId = data.camId || data.socketId;
+    console.log(`New peer joined: camId=${camId}, socketId=${data.socketId}`);
 
-    if (data.socketId !== socket.id) {
-      console.log(`data.socketId:${data.socketId}, socket.id: ${socket.id}`);
-      createPeerConnection(data.socketId);
-      if (isInitiator) {
+    // camId 기준으로 기존 매핑 확인
+
+    if (camIdToChannelMap.hasOwnProperty(camId)) {
+      // ✅ camId 이미 등록된 경우 → 기존 peer 정리 후 새 연결 생성
+      const channelIndex = camIdToChannelMap[camId];
+      console.log(`CamId ${camId} is already mapped to channel ${channelIndex}`);
+
+      const oldSocketId = cctvChannels[channelIndex].peerId;
+      
+      // ✅ 기존 연결이 있고 새 socketId와 다를 때만 정리
+      if (oldSocketId && oldSocketId !== data.socketId && peerConnections[oldSocketId]) {
+        console.log(`Cleaning up old connection for camId=${camId}, socketId=${oldSocketId}`);
+        cleanupPeer(oldSocketId);
+      }
+
+      // ✅ peerConnection이 없을 때만 생성
+      if (!peerConnections[data.socketId]) {
+        createPeerConnection(data.socketId);
+      }
+
+      cctvChannels[channelIndex].peerId = data.socketId;
+      cctvChannels[channelIndex].connected = true;
+      cctvChannels[channelIndex].status.textContent = "CONNECTED";
+      cctvChannels[channelIndex].status.className = "cctv-status status-connected";
+
+      // initiator면 offer 보내기
+      if (isInitiator && peerConnections[data.socketId]) {
         doCall(data.socketId);
+      }
+    }
+    else {
+      // 새 camId인 경우 채널 할당
+      const channelIndex = assignCctvChannel(data.socketId, camId);
+
+      if (channelIndex !== -1) {
+        console.log(`Created new peer for camId: ${camId}, channel: ${channelIndex}`);
+
+        // ✅ 채널 상태 명시적으로 업데이트
+        cctvChannels[channelIndex].peerId = data.socketId;
+        cctvChannels[channelIndex].connected = true;
+        cctvChannels[channelIndex].status.textContent = "CONNECTED";
+        cctvChannels[channelIndex].status.className = "cctv-status status-connected";
+
+        // PeerConnection 생성 및 offer 전송
+        if (!peerConnections[data.socketId]) {
+          createPeerConnection(data.socketId);
+        }
+        if (isInitiator && peerConnections[data.socketId]) {
+          doCall(data.socketId);
+        }
+      }
+      else {
+        console.log(`No available channels for camId: ${camId}`);
       }
     }
   });
@@ -134,20 +176,53 @@ document.addEventListener('DOMContentLoaded', function() {
   // peer-left event 연결 종료 알림
   socket.on("peer-left", function(data) {
     const peerId = data.socketId;
-    console.log(`Peer left:`, data);
+    const camId = data.comId || null;
+    console.log(`Peer left: socketId=${peerId}, camId=${camId}, room=${data.room}`);
 
     cleanupPeer(peerId);
   });
 
+  // ✅ camId 매핑 업데이트 함수 추가
+  function updateCamIdMapping(oldCamId, newCamId) {
+    if (camIdToChannelMap.hasOwnProperty(oldCamId)) {
+      const channelIndex = camIdToChannelMap[oldCamId];
+      camIdToChannelMap[newCamId] = channelIndex;
+      delete camIdToChannelMap[oldCamId];
+      console.log(`Updated camId mapping: ${oldCamId} -> ${newCamId} (channel ${channelIndex})`);
+    }
+  }
+
   // 메세지 수신 함수
   socket.on('message', function(data) {
-    console.log("Client received message from:", data.from, "type:", 
-            data.message.type || typeof data.message, data.message);
+    const camId = data.camId || data.from;
+    const socketId = data.from;
+    console.log(`Client received message from camId=${camId}, socket=${socketId}`);
+
+    // camId가 변경된 경우 매핑 업데이트
+    if (camIdToChannelMap.hasOwnProperty(socketId) && camId !== socketId) {
+      updateCamIdMapping(socketId, camId);
+    }
+
+    // camId -> socketId 매핑 갱신
+    if (camIdToChannelMap.hasOwnProperty(camId)) {
+      const channelIndex = camIdToChannelMap[camId];
+      if (cctvChannels[channelIndex].peerId !== socketId) {
+        console.log(`Updating mapping: camId=${camId}, old=${cctvChannels[channelIndex].peerId}, new=${socketId}`);
+        cctvChannels[channelIndex].peerId = socketId;        
+      }
+    }
 
     // offer를 받으면 즉시 PeerConnection 생성
     if (data.message.type === "offer" && !peerConnections[data.from]) {
       console.log('Creating PeerConnection for offer from:', data.from);
       createPeerConnection(data.from);
+
+      // ✅ 여기서도 camId 매핑 확인 및 업데이트 필요
+      const camId = data.camId || data.from;
+      if (camId !== data.from && camIdToChannelMap.hasOwnProperty(camId)) {
+        const channelIndex = camIdToChannelMap[camId];
+        cctvChannels[channelIndex].peerId = data.from;
+      }
     }
 
     const pc = peerConnections[data.from];
@@ -273,6 +348,12 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   // PeerConnection 생성
   function createPeerConnection(socketId) {
+    // ✅ 이미 존재하는지 확인
+    if (peerConnections[socketId]) {
+      console.log(`PeerConnection for ${socketId} already exists`);
+      return peerConnections[socketId];
+    }
+
     try {
       const pc = new RTCPeerConnection(pcConfig);
       peerConnections[socketId] = pc;
@@ -311,9 +392,29 @@ document.addEventListener('DOMContentLoaded', function() {
         const stream = event.streams[0];
         if (!peerStreams[socketId]) {
           peerStreams[socketId] = stream;
-          // CCTV channel 에 할담 및 표시
-          const channel = assignCctvChannel(socketId);
-          if (channel !== -1) {
+
+          // ✅ 이미 할당된 채널 찾기 (camId 또는 socketId로)
+          let channelIndex = -1;
+          
+          // 1. camId로 먼저 찾기
+          for (const [camId, chanIdx] of Object.entries(camIdToChannelMap)) {
+            if (cctvChannels[chanIdx].peerId === socketId) {
+              channelIndex = chanIdx;
+              break;
+            }
+          }
+          
+          // 2. 없으면 socketId로 임시 매핑된 것 찾기
+          if (channelIndex === -1 && camIdToChannelMap.hasOwnProperty(socketId)) {
+            channelIndex = camIdToChannelMap[socketId];
+          }
+          
+          // 3. 그래도 없으면 새로 할당 (임시로 socketId 사용)
+          if (channelIndex === -1) {
+            channelIndex = assignCctvChannel(socketId, socketId);
+          }
+          
+          if (channelIndex !== -1) {
             updateCctvVideoDisplay(socketId, event.streams[0]);
           }
         }
@@ -467,6 +568,12 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
+  // ✅ 서버에게도 cleanup-cam 전송 (dummy-camera stop/start와 동일한 흐름)
+  socket.emit("cleanup-cam", {
+    room: room,
+    camId: null   // 모니터링은 camId 대신 room 전체 기준 정리
+  });
+
   // 페이지 언로드 시 정리
   window.addEventListener('beforeunload', function() {
     hangup();
@@ -517,7 +624,7 @@ function initializeCctvGrid() {
 }
 
 // peer 연결시 CCTV channel 할당
-function assignCctvChannel(peerId) {
+function assignCctvChannel(peerId, camId = null) {
   //사용 가능한 CCTV channel 찾기
   for (let i=1; i <= 9; i++) {
     if(!cctvChannels[i].connected) {
@@ -526,7 +633,13 @@ function assignCctvChannel(peerId) {
       cctvChannels[i].status.textContent = "CONNECTED";
       cctvChannels[i].status.className = "cctv-status status-connected"
       activeCctvCount++;
-      console.log(`Assigned CCTV channel ${i} to peer ${peerId}`);
+
+      // camId 매핑 저장
+      if (camId) {
+        camIdToChannelMap[camId] = i;
+      }
+
+      console.log(`Assigned CCTV channel ${i} to peer ${peerId}${camId ? ` (camId: ${camId})` : ''}`);
       return i;
     }
   }
@@ -542,10 +655,21 @@ function releaseCctvChannel(peerId) {
     if(cctvChannels[i].peerId === peerId) {
       cctvChannels[i].connected = false;
       cctvChannels[i].peerId = null;
-      cctvChannels[i].element.srcObject = null;
+      if (cctvChannels[i].element) {
+        cctvChannels[i].element.srcObject = null;
+      }
       cctvChannels[i].status.textContent = "DISCONNECTED";
       cctvChannels[i].status.className = "cctv-status status-disconnected"
       activeCctvCount--;
+
+      // camId 매핑에서도 제거
+      for (const [camId, channelIndex] of Object.entries(camIdToChannelMap)) {
+        if (channelIndex === i) {
+          delete camIdToChannelMap[camId];
+          break;
+        }
+      }
+
       console.log(`Released CCTV channel ${i} from peer ${peerId}`);
       return ;
     }
@@ -562,10 +686,13 @@ function updateCctvVideoDisplay(peerId, stream) {
         cctvChannels[i].element.srcObject = stream;
       }
       
-      cctvChannels[i].element.muted = true; // 자동재생 정책 회피
-      cctvChannels[i].element.play()
-        .then(() => console.log(`CCTV ${i} started playing`))
-        .catch(error => console.error(`CCTV ${i} play error:`, error));
+      // ✅ 이미 재생 중인지 확인
+      if (cctvChannels[i].element.paused) {
+        cctvChannels[i].element.muted = true; // 자동재생 정책 회피
+        cctvChannels[i].element.play()
+          .then(() => console.log(`CCTV ${i} started playing`))
+          .catch(error => console.error(`CCTV ${i} play error:`, error));
+      }
       cctvChannels[i].status.className = "cctv-status status-connected"
       cctvChannels[i].status.textContent = "CONNECTED"
 
@@ -595,7 +722,10 @@ function refreshAllStreams() {
   }
 
   activeCctvCount = 0;
-  
+
+  // camId 매핑도 초기화
+  camIdToChannelMap = {};
+
   // 서버에 재연결 요청
   socket.emit('create or join', room);
   // room 정보 다시 요청해서 offer/answer trigger

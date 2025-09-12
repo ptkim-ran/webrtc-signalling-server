@@ -2,7 +2,23 @@
 (() => {
   const logEl = document.getElementById('log');
   function log(...args) {
-    const line = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+    //  const line = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+    // circular-safe stringify
+    function safeStringify(obj) {
+      const seen = new WeakSet();
+      return JSON.stringify(obj, (key, value) => {
+        if (typeof value === "object" && value !== null) {
+          if (seen.has(value)) return "[Circular]";
+          seen.add(value);
+        }
+        return value;
+      });
+    }
+
+    const line = args
+    .map(a => (typeof a === 'object' ? safeStringify(a) : String(a)))
+    .join(' ');
+
     const div = document.createElement('div');
     div.textContent = line;
     logEl.appendChild(div);
@@ -60,12 +76,12 @@
   }
 
   async function startPublisher() {
-    const id = document.getElementById('camId').value || 'cam-1';
+    const camId = document.getElementById('camId').value || 'cam-1';
     const [w, h] = document.getElementById('res').value.split('x').map(x => parseInt(x, 10));
     const fps = parseInt(document.getElementById('fps').value, 10);
 
     // build stream from canvas + (optional) oscillator audio
-    startPattern({w, h, fps, label: id});
+    startPattern({w, h, fps, label: camId});
     const canvasStream = canvas.captureStream(fps);
 
     // Create a silent audio track to keep pipeline consistent
@@ -88,15 +104,25 @@
       ? `http://${location.hostname}:3000`
       : `http://webrtc-local.com:3000`;
 
+    // 새 연결 전 기존 socket cleanup
+    if (socket) {
+      stopPublisher();
+    }
+
     socket = io(target, { transports: ['websocket', 'polling'] });
+
     socket.on('connect', () => {
       log('socket connected', socket.id);
-      socket.emit('create or join', room);
+      socket.emit('create or join', room, { camId });
     });
 
     socket.on('room-info', (data) => {
       log('room-info', data);
+
       data.clients.forEach(remoteId => {
+        if (pcs[remoteId]) {
+          cleanupPeer(remoteId); // 기존 연결 정리
+        }
         if (data.isInitiator) {
           createPeer(remoteId, true);
         }
@@ -114,19 +140,18 @@
 
     socket.on('peer-left', (data) => {
       log('peer-left', data);
-      const pc = pcs[data.socketId];
-      if (pc) { pc.close(); delete pcs[data.socketId]; }
+      cleanupPeer(data.socketId); // cleanup 함수 호출
     });
 
     socket.on('message', async ({ from, message }) => {
-      const pc = pcs[from] || createPeer(from, false);
+      const pc = pcs[from] || await createPeer(from, false);
       if (message.type === 'offer') {
-        await pc.setRemoteDescription(message);
+        await pc.setRemoteDescription(new RTCSessionDescription(message));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit('message', { targetId: from, message: pc.localDescription, room });
       } else if (message.type === 'answer') {
-        await pc.setRemoteDescription(message);
+        await pc.setRemoteDescription(new RTCSessionDescription(message));
       } else if (message.type === 'candidate') {
         try {
           await pc.addIceCandidate({ candidate: message.candidate, sdpMLineIndex: message.label, sdpMid: message.id });
@@ -137,7 +162,38 @@
     });
   }
 
-  function createPeer(remoteId, makeOffer) {
+  function stopPublisher() {
+    if (animHandle) clearTimeout(animHandle);
+    if (stream) stream.getTracks().forEach(t => t.stop());
+
+    Object.values(pcs).forEach(pc => pc.close());
+    pcs = {};
+
+    if (socket) {
+      const camId = document.getElementById('camId').value || 'cam-1';
+      socket.emit('cleanup-cam', { camId, room });
+      socket.disconnect();
+      socket = null;
+    }
+
+    log('stopPublisher socket disconnected');
+  }
+
+  // peer cleanup.
+  function cleanupPeer(remoteId) {
+    log('Cleaning up peer:', remoteId);
+    const pc = pcs[remoteId];
+    if (pc) {
+      pc.onicecandidate = null;
+      pc.onconnectionstatechange = null;
+      pc.oniceconnectionstatechange = null;
+      pc.close();
+      delete pcs[remoteId];
+    }
+  }
+
+  // peer connection 생성.
+  async function createPeer(remoteId, makeOffer) {
     log('createPeer ->', remoteId, 'offer?', makeOffer);
     const pc = new RTCPeerConnection({
       iceServers: [
@@ -146,6 +202,32 @@
       ]
     });
     pcs[remoteId] = pc;
+
+
+    // TURN credential fetch
+    if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      try {
+        const response = await fetch("http://webrtc-local.com:3000/api/turn-credentials");
+        if (response.ok) {
+          const turnConfig = await response.json();
+          log("Got TURN server credentials:", turnConfig);
+
+          // RTCPeerConnection은 iceServers를 직접 push 못 함
+          // → getConfiguration() / setConfiguration() 사용해야 함
+          const cfg = pc.getConfiguration();
+          cfg.iceServers.push({
+            urls: turnConfig.urls,
+            username: turnConfig.username,
+            credential: turnConfig.credential
+          });
+          pc.setConfiguration(cfg);
+
+          log('TURN server added to RTCPeerConnection:', cfg.iceServers);
+        }
+      } catch (err) {
+        console.warn('TURN setup failed, using STUN only', err);
+      }
+    }
 
     // publish our tracks
     if (stream) {
@@ -157,6 +239,7 @@
         socket.emit('message', {
           targetId: remoteId,
           room,
+          camId,
           message: {
             type: 'candidate',
             label: e.candidate.sdpMLineIndex,
@@ -168,26 +251,29 @@
     };
 
     pc.onconnectionstatechange = () => log('pc state', remoteId, pc.connectionState);
-    pc.oniceconnectionstatechange = () => log('ice state', remoteId, pc.iceConnectionState);
+    pc.oniceconnectionstatechange = () => {
+      log('ice state', remoteId, pc.iceConnectionState);
+
+      if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+        // 일정 시간 후 회복되지 않으면 정리
+        setTimeout(() => {
+          if (pcs[remoteId] && (pcs[remoteId].iceConnectionState === 'failed' || pcs[remoteId].iceConnectionState === 'disconnected')) {
+            log(`Connection ${pc.iceConnectionState} for ${remoteId}, cleaning up.`);
+            cleanupPeer(remoteId);
+          }
+        }, 3000);
+      }
+    }
 
     (async () => {
       if (makeOffer) {
-        const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+        const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        socket.emit('message', { targetId: remoteId, message: pc.localDescription, room });
+        socket.emit('message', { targetId: remoteId, room, message: offer });
       }
     })();
 
     return pc;
-  }
-
-  function stopPublisher() {
-    if (animHandle) clearTimeout(animHandle);
-    if (stream) stream.getTracks().forEach(t => t.stop());
-    Object.values(pcs).forEach(pc => pc.close());
-    pcs = {};
-    if (socket) socket.disconnect();
-    log('stopPublisher socket ', socket);
   }
 
   document.getElementById('startBtn').addEventListener('click', startPublisher);
